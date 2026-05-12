@@ -1,637 +1,620 @@
-<?php include 'config.php'; 
+<?php
+// Hapus atau comment session_start() jika sudah ada di config.php
+// session_start(); 
+include 'config.php';
 include 'functions.php';
 
-// Submit Review
-if(isset($_POST['submit_review'])){
-    $order_id = $_POST['order_id'];
-    $rating = $_POST['rating'];
-    $comment = $_POST['comment'];
-    
-    $sql = "INSERT INTO reviews (order_id, rating, comment) VALUES ('$order_id', '$rating', '$comment')";
-    mysqli_query($conn, $sql);
-    echo "<script>alert('Terima kasih atas ulasan Anda!'); window.location='riwayat.php';</script>";
-    exit;
+// Ambil data pesanan dari database
+$orders = [];
+if(isset($_SESSION['user_phone'])){
+    $phone = $_SESSION['user_phone'];
+    $result = mysqli_query($conn, "SELECT * FROM orders WHERE customer_phone = '$phone' ORDER BY id DESC");
+    while($row = mysqli_fetch_assoc($result)){
+        // Ambil items - coba dari kolom items (JSON) atau tabel order_items
+        $items = [];
+        
+        // Coba ambil dari kolom items (JSON format)
+        if(isset($row['items']) && !empty($row['items']) && $row['items'] !== 'NULL'){
+            $decoded = json_decode($row['items'], true);
+            if(is_array($decoded)){
+                $items = $decoded;
+            }
+        }
+        
+        // Jika masih kosong, coba ambil dari tabel order_items
+        if(empty($items)){
+            $itemsResult = mysqli_query($conn, "SELECT * FROM order_items WHERE order_id = {$row['id']}");
+            if($itemsResult){
+                while($item = mysqli_fetch_assoc($itemsResult)){
+                    $items[] = $item;
+                }
+            }
+        }
+        
+        $row['items'] = $items;
+        $orders[] = $row;
+    }
 }
 
-// Filter berdasarkan tab
-$tab = isset($_GET['tab']) ? $_GET['tab'] : 'semua';
-$where = "";
-if($tab == 'pending') $where = "WHERE status = 'Pending'";
-elseif($tab == 'diproses') $where = "WHERE status = 'Diproses'";
-elseif($tab == 'dikirim') $where = "WHERE status = 'Dikirim'";
-elseif($tab == 'selesai') $where = "WHERE status = 'Selesai'";
-elseif($tab == 'dibatalkan') $where = "WHERE status = 'Dibatalkan'";
+// Debug: Lihat isi orders
+// echo "<pre>"; print_r($orders); echo "</pre>"; exit;
 
-$orders = mysqli_query($conn, "SELECT * FROM orders $where ORDER BY id DESC");
+// Demo data jika belum ada pesanan
+if(empty($orders)){
+    $orders = [
+        [
+            'id' => 1001,
+            'store_name' => 'Texcer Hot',
+            'status' => 'Selesai',
+            'created_at' => '2025-05-10 11:51:00',
+            'total_price' => 37000,
+            'resi_number' => 'JNE123456',
+            'items' => [
+                [
+                    'id' => 1,
+                    'name' => 'Mie Yamin', 
+                    'variant' => '', 
+                    'price' => 9000, 
+                    'qty' => 2, 
+                    'image' => 'assets/images/mie/yamin.png'
+                ],
+                [
+                    'id' => 3,
+                    'name' => 'Ceker Mercon Tanpa Tulang', 
+                    'variant' => 'Medium (5 pcs)', 
+                    'price' => 15000, 
+                    'qty' => 1, 
+                    'image' => 'assets/images/mercon/ceker_tnpa_tulang.jpg'
+                ],
+            ]
+        ],
+        [
+            'id' => 1002,
+            'store_name' => 'Texcer Hot',
+            'status' => 'Menunggu Konfirmasi',
+            'created_at' => '2025-05-12 18:57:00',
+            'total_price' => 3000,
+            'resi_number' => '',
+            'items' => [
+                [
+                    'id' => 11,
+                    'name' => 'Teh', 
+                    'variant' => 'Es', 
+                    'price' => 3000, 
+                    'qty' => 1, 
+                    'image' => 'assets/images/minuman/teh.jpg'
+                ],
+            ]
+        ],
+    ];
+}
 
-// Variabel untuk sidebar active state
-$currentPage = basename($_SERVER['PHP_SELF']);
+$currentPage = 'riwayat.php';
+$activeFilter = $_GET['filter'] ?? 'semua';
+
+// Filter orders
+$filteredOrders = array_filter($orders, function($o) use ($activeFilter) {
+    $status = $o['status'] ?? '';
+    if($activeFilter === 'semua') return true;
+    if($activeFilter === 'perlu_dibayar') return in_array($status, ['Menunggu Pembayaran', 'Pending', 'Menunggu Konfirmasi']);
+    if($activeFilter === 'dikirim') return $status === 'Dikirim';
+    if($activeFilter === 'diterima') return $status === 'Selesai';
+    if($activeFilter === 'dibatalkan') return $status === 'Dibatalkan';
+    return true;
+});
+
+// Status config
+function getStatusConfig($status) {
+    return match($status){
+        'Selesai'               => ['label' => 'Pesanan selesai',         'color' => '#4CAF50', 'icon' => 'fa-check-circle',   'badge' => '#4CAF50'],
+        'Dikirim'               => ['label' => 'Sedang dikirim',          'color' => '#2196F3', 'icon' => 'fa-shipping-fast',  'badge' => '#2196F3'],
+        'Menunggu Konfirmasi'   => ['label' => 'Menunggu konfirmasi',     'color' => '#FF9800', 'icon' => 'fa-clock',          'badge' => '#FF9800'],
+        'Diproses'              => ['label' => 'Pesanan diproses',        'color' => '#9C27B0', 'icon' => 'fa-cog',            'badge' => '#9C27B0'],
+        'Dibatalkan'            => ['label' => 'Pesanan dibatalkan',      'color' => '#F44336', 'icon' => 'fa-times-circle',   'badge' => '#F44336'],
+        'Menunggu Pembayaran'   => ['label' => 'Perlu dibayar',           'color' => '#FF5722', 'icon' => 'fa-money-bill',     'badge' => '#FF5722'],
+        'Pending'               => ['label' => 'Pending',                 'color' => '#FF9800', 'icon' => 'fa-clock',          'badge' => '#FF9800'],
+        default                 => ['label' => $status ?? 'Unknown',      'color' => '#9E9E9E', 'icon' => 'fa-question-circle','badge' => '#9E9E9E'],
+    };
+}
+
+function getStatusMessage($status, $resi) {
+    return match($status){
+        'Selesai'             => 'Paket Anda telah diterima.',
+        'Dikirim'             => 'Paket sedang dalam perjalanan.' . ($resi ? ' No. Resi: ' . $resi : ''),
+        'Menunggu Konfirmasi' => 'Pesanan Anda menunggu konfirmasi.',
+        'Diproses'            => 'Pesanan Anda sedang diproses.',
+        'Dibatalkan'          => 'Pengantaran paket Anda dibatalkan.',
+        'Menunggu Pembayaran' => 'Silakan lakukan pembayaran.',
+        'Pending'             => 'Pesanan sedang diproses.',
+        default               => 'Status pesanan tidak diketahui.',
+    };
+}
+
+function formatTime($datetime) {
+    if(empty($datetime) || $datetime === '0000-00-00 00:00:00') return '--:-- --';
+    $ts = strtotime($datetime);
+    return $ts ? date('h.i A', $ts) : '--:-- --';
+}
+
+// Hitung notifikasi
+$totalNotifications = 0;
+if(isset($_SESSION['user_phone']) && isset($conn)){
+    $phone = $_SESSION['user_phone'];
+    $notifQuery = mysqli_query($conn, "SELECT COUNT(*) as total FROM orders WHERE customer_phone = '$phone' AND status IN ('Menunggu Konfirmasi', 'Dikirim')");
+    if($notifQuery){
+        $result = mysqli_fetch_assoc($notifQuery);
+        $totalNotifications = $result['total'] ?? 0;
+    }
+}
 ?>
-
 <!DOCTYPE html>
 <html lang="id">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Riwayat Pesanan - Texcer Hot</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    <style>
-        /* === DESKTOP DARK THEME === */
-        :root {
-            --bg-dark: #121212;
-            --bg-card: #1e1e1e;
-            --bg-sidebar: #181818;
-            --accent: #ff6b35;
-            --accent-hover: #ff8555;
-            --text-primary: #ffffff;
-            --text-secondary: #a0a0a0;
-            --border-color: #2a2a2a;
-            --shadow: 0 4px 20px rgba(0,0,0,0.3);
-        }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Riwayat Pesanan - Texcer Hot</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+<style>
+:root {
+    --primary: #8B6F4E;
+    --primary-dark: #6B5637;
+    --secondary: #D4A574;
+    --accent: #E8B4A2;
+    --bg-cream: #FDF8F3;
+    --bg-white: #FFFFFF;
+    --text-dark: #3D2914;
+    --text-gray: #8B7355;
+    --border: #E8DDD4;
+}
 
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        
-        body { 
-            background: var(--bg-dark); 
-            color: var(--text-primary); 
-            font-family: 'Segoe UI', system-ui, sans-serif;
-            display: flex;
-            min-height: 100vh;
-        }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #f5f5f5; color: var(--text-dark); font-family: 'Segoe UI', system-ui, sans-serif; }
 
-        /* === SIDEBAR === */
-        .sidebar {
-            width: 250px;
-            background: var(--bg-sidebar);
-            border-right: 1px solid var(--border-color);
-            padding: 25px 20px;
-            position: fixed;
-            height: 100vh;
-            overflow-y: auto;
-            z-index: 100;
-        }
-        .logo {
-            font-size: 1.5rem;
-            font-weight: 800;
-            color: var(--accent);
-            margin-bottom: 40px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .logo i { font-size: 1.8rem; }
-        
-        .nav-menu { list-style: none; }
-        .nav-item { margin-bottom: 8px; }
-        .nav-link {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 14px 18px;
-            color: var(--text-secondary);
-            text-decoration: none;
-            border-radius: 12px;
-            transition: 0.3s;
-            font-weight: 500;
-            position: relative;
-        }
-        .nav-link:hover, .nav-link.active {
-            background: rgba(255, 107, 53, 0.15);
-            color: var(--accent);
-        }
-        .nav-link i { width: 20px; text-align: center; }
-        .cart-badge {
-            position: absolute;
-            top: 8px;
-            right: 15px;
-            background: var(--accent);
-            color: white;
-            font-size: 0.7rem;
-            padding: 2px 6px;
-            border-radius: 10px;
-            font-weight: 600;
-        }
+/* Top Nav */
+.top-nav {
+    background: var(--bg-white);
+    padding: 20px 40px;
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+}
+.nav-container {
+    max-width: 1400px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.logo {
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: var(--primary);
+    text-decoration: none;
+}
+.nav-menu {
+    display: flex;
+    gap: 40px;
+    list-style: none;
+}
+.nav-menu a {
+    color: var(--text-gray);
+    text-decoration: none;
+    font-weight: 500;
+}
+.nav-menu a.active { color: var(--primary); }
+.nav-icons { display: flex; gap: 20px; align-items: center; }
+.nav-icons a { color: var(--text-dark); font-size: 1.2rem; position: relative; }
+.cart-count, .notif-count {
+    position: absolute;
+    top: -8px;
+    right: -8px;
+    background: var(--accent);
+    color: white;
+    font-size: 0.7rem;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.notif-count { background: #dc3545; }
 
-        /* === MAIN CONTENT === */
-        .main-content {
-            flex: 1;
-            margin-left: 250px;
-            padding: 30px;
-        }
+/* Filter Tabs */
+.filter-tabs {
+    background: var(--bg-white);
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+}
+.tabs-inner {
+    max-width: 800px;
+    margin: 0 auto;
+    display: flex;
+}
+.tab-link {
+    padding: 13px 18px;
+    color: var(--text-gray);
+    text-decoration: none;
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+}
+.tab-link.active {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+}
 
-        /* === PAGE HEADER === */
-        .page-header {
-            margin-bottom: 30px;
-            padding-bottom: 20px;
-            border-bottom: 1px solid var(--border-color);
-        }
-        .page-title {
-            font-size: 1.8rem;
-            font-weight: 700;
-            color: var(--accent);
-        }
-        
-        /* === TABS === */
-        .tabs-container {
-            background: var(--bg-card);
-            padding: 0 10px;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            overflow-x: auto;
-            white-space: nowrap;
-            border: 1px solid var(--border-color);
-        }
-        .tabs-container::-webkit-scrollbar { display: none; }
-        .tab-btn {
-            display: inline-block;
-            padding: 15px 20px;
-            color: var(--text-secondary);
-            text-decoration: none;
-            font-size: 0.9rem;
-            font-weight: 600;
-            border-bottom: 3px solid transparent;
-            transition: 0.3s;
-        }
-        .tab-btn:hover { color: var(--accent); }
-        .tab-btn.active {
-            color: var(--accent);
-            border-bottom-color: var(--accent);
-        }
-        
-        /* === ORDER CARD === */
-        .order-card {
-            background: var(--bg-card);
-            border-radius: 16px;
-            overflow: hidden;
-            border: 1px solid var(--border-color);
-            margin-bottom: 20px;
-        }
-        .order-header {
-            padding: 20px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid var(--border-color);
-        }
-        .order-store {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .store-name { font-weight: 600; color: var(--text-primary); font-size: 1.1rem; }
-        .order-status {
-            padding: 6px 15px;
-            border-radius: 20px;
-            font-size: 0.8rem;
-            font-weight: 600;
-        }
-        .status-pending { background: #4a3800; color: #ffc107; }
-        .status-diproses { background: #004a4a; color: #00e5ff; }
-        .status-dikirim { background: #003366; color: #4dabf7; }
-        .status-selesai { background: #004d00; color: #51cf66; }
-        .status-dibatalkan { background: #4d0000; color: #ff6b6b; }
-        
-        /* Order Info */
-        .order-info {
-            padding: 20px;
-            display: flex;
-            gap: 20px;
-            align-items: center;
-            background: rgba(255,107,53,0.05);
-        }
-        .delivery-icon {
-            width: 55px;
-            height: 55px;
-            background: var(--accent);
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 1.3rem;
-            color: white;
-        }
-        .delivery-text h6 { color: var(--text-primary); margin-bottom: 5px; font-size: 1.05rem; }
-        .delivery-text p { color: var(--text-secondary); font-size: 0.9rem; }
-        
-        /* Order Items */
-        .order-items {
-            padding: 0 20px 20px;
-        }
-        .item-row {
-            display: flex;
-            gap: 15px;
-            padding: 15px 0;
-            border-bottom: 1px solid var(--border-color);
-        }
-        .item-row:last-child { border-bottom: none; }
-        .item-img {
-            width: 80px;
-            height: 80px;
-            background: var(--bg-sidebar);
-            border-radius: 10px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: var(--accent);
-            font-size: 1.5rem;
-            flex-shrink: 0;
-        }
-        .item-img img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            border-radius: 10px;
-        }
-        .item-details { flex: 1; }
-        .item-name { color: var(--text-primary); font-size: 1rem; margin-bottom: 5px; font-weight: 600; }
-        .item-variant { color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 5px; }
-        .item-price { color: var(--accent); font-weight: 700; font-size: 1.05rem; }
-        .item-qty { color: var(--text-secondary); font-size: 0.85rem; }
-        
-        /* Total */
-        .order-total {
-            padding: 15px 20px;
-            text-align: right;
-            border-top: 1px solid var(--border-color);
-            background: var(--bg-sidebar);
-        }
-        .total-label { color: var(--text-secondary); font-size: 0.9rem; }
-        .total-price { color: var(--accent); font-size: 1.3rem; font-weight: 700; }
-        
-        /* Action Buttons */
-        .order-actions {
-            padding: 20px;
-            display: flex;
-            gap: 12px;
-            justify-content: flex-end;
-            border-top: 1px solid var(--border-color);
-        }
-        .btn-action {
-            padding: 12px 25px;
-            border-radius: 10px;
-            font-size: 0.9rem;
-            font-weight: 600;
-            border: none;
-            cursor: pointer;
-            transition: 0.3s;
-            text-decoration: none;
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .btn-secondary { background: var(--bg-sidebar); color: var(--accent); border: 1px solid var(--accent); }
-        .btn-secondary:hover { background: var(--accent); color: white; }
-        .btn-primary { background: var(--accent); color: white; }
-        .btn-primary:hover { background: var(--accent-hover); }
-        
-        /* Stars Rating */
-        .stars { display: flex; gap: 8px; margin: 10px 0; }
-        .star { color: var(--text-secondary); font-size: 1.8rem; cursor: pointer; transition: 0.2s; }
-        .star.active { color: #ffc107; }
-        .star:hover { transform: scale(1.2); }
-        
-        /* Review Form */
-        .review-form {
-            background: var(--bg-sidebar);
-            padding: 25px;
-            margin: 0 20px 20px;
-            border-radius: 12px;
-            display: none;
-            border: 1px solid var(--border-color);
-        }
-        .review-form.active { display: block; }
-        .review-form textarea {
-            width: 100%;
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: 10px;
-            padding: 15px;
-            color: var(--text-primary);
-            resize: none;
-            margin-top: 15px;
-            font-size: 0.95rem;
-        }
-        .review-form textarea:focus {
-            outline: none;
-            border-color: var(--accent);
-        }
-        
-        /* Empty State */
-        .empty-state {
-            text-align: center;
-            padding: 80px 20px;
-            color: var(--text-secondary);
-        }
-        .empty-state i {
-            font-size: 4rem;
-            margin-bottom: 20px;
-            opacity: 0.3;
-            color: var(--accent);
-        }
-        
-        /* Responsive */
-        @media (max-width: 992px) {
-            .sidebar {
-                width: 80px;
-                padding: 20px 10px;
-            }
-            .logo span, .nav-link span { display: none; }
-            .nav-link { justify-content: center; padding: 15px; }
-            .nav-link i { margin: 0; }
-            .main-content { margin-left: 80px; }
-        }
-        @media (max-width: 768px) {
-            body { flex-direction: column; }
-            .sidebar {
-                width: 100%;
-                height: auto;
-                position: relative;
-                border-right: none;
-                border-bottom: 1px solid var(--border-color);
-                display: flex;
-                justify-content: space-around;
-                padding: 15px;
-            }
-            .logo { display: none; }
-            .nav-menu { display: flex; gap: 5px; }
-            .nav-item { margin: 0; }
-            .nav-link { padding: 10px 15px; flex-direction: column; gap: 5px; font-size: 0.75rem; }
-            .nav-link i { font-size: 1.2rem; }
-            .main-content { margin-left: 0; padding: 20px; }
-            .item-row { flex-direction: column; }
-            .item-img { width: 100%; height: 150px; }
-            .order-actions { flex-direction: column; }
-            .btn-action { width: 100%; justify-content: center; }
-        }
-    </style>
+/* Main Content */
+.main-content {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 14px 0 40px;
+}
+
+/* Bonus Banner */
+.bonus-banner {
+    background: #FFF8EE;
+    padding: 11px 18px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+}
+.bonus-badge {
+    background: #FF9800;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 800;
+}
+
+/* Order Card */
+.order-card {
+    background: var(--bg-white);
+    margin-bottom: 10px;
+    border: 1px solid var(--border);
+}
+.order-header {
+    padding: 14px 18px;
+    display: flex;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border);
+}
+.store-name {
+    font-weight: 700;
+    color: var(--text-dark);
+}
+.mall-badge {
+    background: var(--primary);
+    color: white;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.68rem;
+    margin-right: 8px;
+}
+.status-badge {
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 0.82rem;
+    font-weight: 600;
+}
+
+/* Tracking */
+.tracking-row {
+    padding: 10px 18px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border-bottom: 1px solid var(--border);
+}
+.tracking-icon {
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.tracking-text { flex: 1; }
+.tracking-time { font-weight: 700; font-size: 0.82rem; }
+.tracking-desc { font-size: 0.8rem; color: var(--text-gray); }
+
+/* Product */
+.product-row {
+    padding: 12px 18px;
+    display: flex;
+    gap: 12px;
+    border-bottom: 1px solid var(--border);
+}
+.product-thumb {
+    width: 70px;
+    height: 70px;
+    border-radius: 8px;
+    object-fit: cover;
+    border: 1px solid var(--border);
+}
+.product-thumb-placeholder {
+    width: 70px;
+    height: 70px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-cream);
+    color: var(--primary);
+}
+.product-detail { flex: 1; }
+.product-name {
+    font-weight: 500;
+    margin-bottom: 4px;
+}
+.product-variant {
+    font-size: 0.78rem;
+    color: var(--text-gray);
+    margin-bottom: 5px;
+}
+.product-price-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.88rem;
+}
+
+/* Footer */
+.order-footer {
+    padding: 12px 18px;
+}
+.order-total {
+    text-align: right;
+    margin-bottom: 12px;
+    font-weight: 700;
+}
+.action-buttons {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+}
+.btn-buy-again {
+    background: var(--primary);
+    color: white;
+    border: none;
+    padding: 8px 22px;
+    border-radius: 20px;
+    font-weight: 700;
+    cursor: pointer;
+}
+.btn-cart-small {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: white;
+    cursor: pointer;
+}
+
+/* Empty State */
+.empty-state {
+    text-align: center;
+    padding: 60px 20px;
+}
+.empty-state i {
+    font-size: 4rem;
+    opacity: 0.25;
+    margin-bottom: 16px;
+    color: var(--primary);
+}
+</style>
 </head>
 <body>
 
-<!-- SIDEBAR -->
-<aside class="sidebar">
-    <div class="logo">
-        <i class="fas fa-fire"></i>
-        <span>Texcer Hot</span>
-    </div>
-    
-    <ul class="nav-menu">
-        <li class="nav-item">
-            <a href="index.php" class="nav-link <?= $currentPage == 'index.php' ? 'active' : '' ?>">
-                <i class="fas fa-home"></i>
-                <span>Home</span>
-            </a>
-        </li>
-        <li class="nav-item">
-            <a href="riwayat.php" class="nav-link <?= $currentPage == 'riwayat.php' ? 'active' : '' ?>">
-                <i class="fas fa-history"></i>
-                <span>Order</span>
-            </a>
-        </li>
-        <li class="nav-item">
-            <a href="checkout.php" class="nav-link <?= $currentPage == 'checkout.php' ? 'active' : '' ?>">
-                <i class="fas fa-shopping-cart"></i>
-                <span>Cart</span>
-                <?php if(isset($_SESSION['cart']) && count($_SESSION['cart']) > 0): ?>
-                    <span class="cart-badge"><?= count($_SESSION['cart']) ?></span>
-                <?php endif; ?>
-            </a>
-        </li>
-        <!-- ✅ MENU NOTIFIKASI -->
-        <li class="nav-item">
-            <a href="notifikasi.php" class="nav-link <?= $currentPage == 'notifikasi.php' ? 'active' : '' ?>">
+<!-- Top Nav -->
+<nav class="top-nav">
+    <div class="nav-container">
+        <a href="index.php" class="logo">Texcer Hot</a>
+        <ul class="nav-menu">
+            <li><a href="index.php">Home</a></li>
+            <li><a href="index.php#menu">Menu</a></li>
+            <li><a href="riwayat.php" class="active">Pesanan</a></li>
+        </ul>
+        <div class="nav-icons">
+            <button class="nav-icon-btn">
                 <i class="fas fa-bell"></i>
-                <span>Notifikasi</span>
-                <?php
-                $user_phone = $_SESSION['user_phone'] ?? '';
-                if(!empty($user_phone)){
-                    $unread = mysqli_fetch_assoc(mysqli_query($conn, "
-                        SELECT COUNT(*) as count FROM notifications 
-                        WHERE user_phone = '$user_phone' AND is_read = 0
-                    "))['count'];
-                    if($unread > 0):
-                ?>
-                    <span class="cart-badge" style="background: #ff4757;"><?= $unread ?></span>
-                <?php endif; } ?>
-            </a>
-        </li>
-        <li class="nav-item">
-            <a href="admin.php" class="nav-link <?= $currentPage == 'admin.php' ? 'active' : '' ?>">
-                <i class="fas fa-user-shield"></i>
-                <span>Profile</span>
-            </a>
-        </li>
-    </ul>
-</aside>
-
-<!-- MAIN CONTENT -->
-<main class="main-content">
-    
-    <!-- Page Header -->
-    <div class="page-header">
-        <h1 class="page-title"><i class="fas fa-history me-2"></i>Riwayat Pesanan</h1>
-    </div>
-    
-    <!-- Tabs -->
-    <div class="tabs-container">
-        <a href="riwayat.php?tab=semua" class="tab-btn <?= $tab=='semua'?'active':'' ?>">Semua</a>
-        <a href="riwayat.php?tab=pending" class="tab-btn <?= $tab=='pending'?'active':'' ?>">Perlu Dibayar</a>
-        <a href="riwayat.php?tab=diproses" class="tab-btn <?= $tab=='diproses'?'active':'' ?>">Diproses</a>
-        <a href="riwayat.php?tab=dikirim" class="tab-btn <?= $tab=='dikirim'?'active':'' ?>">Dikirim</a>
-        <a href="riwayat.php?tab=selesai" class="tab-btn <?= $tab=='selesai'?'active':'' ?>">Selesai</a>
-        <a href="riwayat.php?tab=dibatalkan" class="tab-btn <?= $tab=='dibatalkan'?'active':'' ?>">Dibatalkan</a>
-    </div>
-
-    <!-- Order List -->
-    <?php if(mysqli_num_rows($orders) > 0): ?>
-        <?php while($o = mysqli_fetch_assoc($orders)): ?>
-            <?php 
-            $items = mysqli_query($conn, "SELECT * FROM order_items WHERE order_id = {$o['id']}");
-            $status_class = strtolower($o['status']);
-            $review = mysqli_fetch_assoc(mysqli_query($conn, "SELECT * FROM reviews WHERE order_id = {$o['id']}"));
-            ?>
-            
-            <div class="order-card">
-                <!-- Header -->
-                <div class="order-header">
-                    <div class="order-store">
-                        <span style="color: var(--accent);">🔥</span>
-                        <span class="store-name">Texcer Hot</span>
-                        <i class="fas fa-chevron-right" style="color: var(--text-secondary); font-size: 0.8rem;"></i>
-                    </div>
-                    <span class="order-status status-<?= $status_class ?>"><?= $o['status'] ?></span>
-                </div>
-                
-                <!-- Delivery Info -->
-                <div class="order-info">
-                    <div class="delivery-icon">
-                        <?php if($o['status']=='Pending'): ?>
-                            <i class="fas fa-clock"></i>
-                        <?php elseif($o['status']=='Diproses'): ?>
-                            <i class="fas fa-utensils"></i>
-                        <?php elseif($o['status']=='Dikirim'): ?>
-                            <i class="fas fa-motorcycle"></i>
-                        <?php elseif($o['status']=='Selesai'): ?>
-                            <i class="fas fa-check"></i>
-                        <?php else: ?>
-                            <i class="fas fa-times"></i>
-                        <?php endif; ?>
-                    </div>
-                    <div class="delivery-text">
-                        <h6>
-                            <?php 
-                            $time = date('H:i', strtotime($o['order_date']));
-                            if($o['status']=='Pending') echo "$time Menunggu Pembayaran";
-                            elseif($o['status']=='Diproses') echo "$time Sedang Dimasak";
-                            elseif($o['status']=='Dikirim') echo "$time Sedang Dikirim";
-                            elseif($o['status']=='Selesai') echo "$time Pesanan Selesai";
-                            else echo "$time Pesanan Dibatalkan";
-                            ?>
-                        </h6>
-                        <p>
-                            <?php 
-                            if($o['status']=='Diproses') echo "Pesanan Anda sedang disiapkan oleh dapur";
-                            elseif($o['status']=='Dikirim') echo "Kurir sedang menuju lokasi Anda";
-                            elseif($o['status']=='Selesai') echo "Terima kasih sudah memesan di Texcer Hot";
-                            else echo "Status pesanan Anda saat ini";
-                            ?>
-                        </p>
-                    </div>
-                </div>
-                
-                <!-- Items -->
-                <div class="order-items">
-                    <?php while($i = mysqli_fetch_assoc($items)): ?>
-                    <div class="item-row">
-                        <div class="item-img">
-                            <?php if(!empty($i['image'])): ?>
-                                <img src="<?= $i['image'] ?>" alt="<?= $i['product_name'] ?>">
-                            <?php else: ?>
-                                <i class="fas fa-utensils"></i>
-                            <?php endif; ?>
-                        </div>
-                        <div class="item-details">
-                            <div class="item-name"><?= $i['product_name'] ?></div>
-                            <div class="item-variant">Variant: Default</div>
-                            <div class="item-price">Rp <?= number_format($i['subtotal'] / $i['qty'], 0, ',', '.') ?></div>
-                            <div class="item-qty">x<?= $i['qty'] ?></div>
-                        </div>
-                    </div>
-                    <?php endwhile; ?>
-                </div>
-                
-                <!-- Total -->
-                <div class="order-total">
-                    <span class="total-label">Total Pesanan</span><br>
-                    <span class="total-price">Rp <?= number_format($o['total_price'], 0, ',', '.') ?></span>
-                </div>
-                
-                <!-- Review Section (Only for completed orders) -->
-                <?php if($o['status'] == 'Selesai'): ?>
-                    <?php if(!$review): ?>
-                    <div class="order-actions">
-                        <button class="btn-action btn-secondary" onclick="toggleReview(<?= $o['id'] ?>)">
-                            <i class="fas fa-star"></i> Beri Ulasan
-                        </button>
-                        <a href="index.php" class="btn-action btn-primary">
-                            <i class="fas fa-redo"></i> Beli Lagi
-                        </a>
-                    </div>
-                    
-                    <!-- Review Form -->
-                    <div class="review-form" id="review-<?= $o['id'] ?>">
-                        <h6 class="text-warning mb-3">Beri Rating & Ulasan</h6>
-                        <form method="POST">
-                            <input type="hidden" name="order_id" value="<?= $o['id'] ?>">
-                            
-                            <div class="stars" id="stars-<?= $o['id'] ?>">
-                                <span class="star" data-rating="1" onclick="setRating(<?= $o['id'] ?>, 1)">★</span>
-                                <span class="star" data-rating="2" onclick="setRating(<?= $o['id'] ?>, 2)">★</span>
-                                <span class="star" data-rating="3" onclick="setRating(<?= $o['id'] ?>, 3)">★</span>
-                                <span class="star" data-rating="4" onclick="setRating(<?= $o['id'] ?>, 4)">★</span>
-                                <span class="star" data-rating="5" onclick="setRating(<?= $o['id'] ?>, 5)">★</span>
-                            </div>
-                            <input type="hidden" name="rating" id="rating-<?= $o['id'] ?>" value="0" required>
-                            
-                            <textarea name="comment" rows="3" placeholder="Tulis ulasan Anda..." required></textarea>
-                            
-                            <button type="submit" name="submit_review" class="btn-action btn-primary mt-3 w-100">
-                                Kirim Ulasan
-                            </button>
-                        </form>
-                    </div>
-                    <?php else: ?>
-                    <!-- Display Existing Review -->
-                    <div style="padding: 20px; background: var(--bg-sidebar); margin: 0 20px 20px; border-radius: 12px; border: 1px solid var(--border-color);">
-                        <div class="d-flex align-items-center gap-2 mb-2">
-                            <span style="color: #ffc107;">
-                                <?php for($s=1; $s<=$review['rating']; $s++) echo "★"; ?>
-                                <?php for($s=$review['rating']+1; $s<=5; $s++) echo "☆"; ?>
-                            </span>
-                            <span style="color: var(--text-secondary); font-size: 0.85rem;"><?= date('d M Y', strtotime($review['created_at'])) ?></span>
-                        </div>
-                        <p style="color: var(--text-primary); font-size: 0.95rem;"><?= $review['comment'] ?></p>
-                    </div>
-                    <?php endif; ?>
+                <?php if($totalNotifications > 0): ?>
+                <span class="notif-count"><?= $totalNotifications ?></span>
                 <?php endif; ?>
-                
-                <!-- Cancel/Pay Button (Only for pending) -->
-                <?php if($o['status'] == 'Pending'): ?>
-                <div class="order-actions">
-                    <a href="checkout.php" class="btn-action btn-primary">Bayar Sekarang</a>
-                    <button class="btn-action btn-secondary" style="border-color: #ff6b6b; color: #ff6b6b;" onclick="if(confirm('Batalkan pesanan?')) window.location='?cancel=<?= $o['id'] ?>'">
-                        <i class="fas fa-times"></i> Batalkan
-                    </button>
-                </div>
+            </button>
+            <a href="checkout.php">
+                <i class="fas fa-shopping-bag"></i>
+                <?php if(isset($_SESSION['cart']) && count($_SESSION['cart']) > 0): ?>
+                <span class="cart-count"><?= count($_SESSION['cart']) ?></span>
                 <?php endif; ?>
-            </div>
-        <?php endwhile; ?>
-    <?php else: ?>
-        <div class="empty-state">
-            <i class="fas fa-receipt"></i>
-            <h3>Belum ada pesanan</h3>
-            <p style="margin: 15px 0 25px;">Silakan pesan makanan favorit Anda</p>
-            <a href="index.php" class="btn-action btn-primary">Mulai Pesan</a>
+            </a>
+            <?php if(isset($_SESSION['user_phone'])): ?>
+            <a href="profile.php"><i class="fas fa-user"></i></a>
+            <?php else: ?>
+            <a href="auth/login.php"><i class="fas fa-sign-in-alt"></i></a>
+            <?php endif; ?>
         </div>
+    </div>
+</nav>
+
+<!-- Filter Tabs -->
+<div class="filter-tabs">
+    <div class="tabs-inner">
+        <?php
+        $tabs = [
+            'semua' => 'Semua',
+            'perlu_dibayar' => 'Perlu dibayar',
+            'dikirim' => 'Untuk dikirim',
+            'diterima' => 'Akan diterima',
+            'dibatalkan' => 'Dibatalkan',
+        ];
+        foreach($tabs as $key => $label):
+        ?>
+        <a href="?filter=<?= $key ?>" class="tab-link <?= $activeFilter === $key ? 'active' : '' ?>">
+            <?= $label ?>
+        </a>
+        <?php endforeach; ?>
+    </div>
+</div>
+
+<!-- Main Content -->
+<div class="main-content">
+
+    <!-- Bonus Banner -->
+    <div class="bonus-banner">
+        <div>
+            <i class="fas fa-gift" style="color:#FF9800;"></i>
+            <span>Dapatkan <span class="bonus-badge">bonus 35</span> dengan menulis ulasan.</span>
+        </div>
+        <i class="fas fa-chevron-right"></i>
+    </div>
+
+    <?php if(empty($filteredOrders)): ?>
+    <div class="empty-state">
+        <i class="fas fa-receipt"></i>
+        <h3>Belum ada pesanan</h3>
+        <p>Yuk, pesan makanan pedas favoritmu sekarang!</p>
+        <a href="index.php" class="btn-buy-again">Mulai Pesan</a>
+    </div>
+    <?php else: ?>
+
+    <?php foreach($filteredOrders as $order):
+        $cfg = getStatusConfig($order['status'] ?? '');
+        $timeStr = formatTime($order['created_at'] ?? '');
+        $trackMsg = getStatusMessage($order['status'] ?? '', $order['resi_number'] ?? '');
+        $storeName = $order['store_name'] ?? $order['store'] ?? 'Texcer Hot';
+        $items = $order['items'] ?? [];
+        $status = $order['status'] ?? '';
+        $isSelesai = $status === 'Selesai';
+        $isMenunggu = in_array($status, ['Menunggu Konfirmasi', 'Pending']);
+    ?>
+    <div class="order-card">
+
+        <!-- Header -->
+        <div class="order-header">
+            <div class="store-name">
+                <span class="mall-badge">Hot</span>
+                <?= htmlspecialchars($storeName) ?>
+            </div>
+            <span class="status-badge" style="background: <?= $cfg['badge'] ?>18; color: <?= $cfg['badge'] ?>;">
+                <?= htmlspecialchars($cfg['label']) ?>
+            </span>
+        </div>
+
+        <!-- Tracking -->
+        <div class="tracking-row">
+            <div class="tracking-icon" style="background: <?= $cfg['badge'] ?>18;">
+                <i class="fas <?= $cfg['icon'] ?>" style="color: <?= $cfg['badge'] ?>;"></i>
+            </div>
+            <div class="tracking-text">
+                <div class="tracking-time">
+                    <?= $timeStr ?> <?= $isSelesai ? 'Diterima' : ($status === 'Dibatalkan' ? 'Dibatalkan' : 'Menunggu konfirmasi') ?>
+                </div>
+                <div class="tracking-desc"><?= htmlspecialchars($trackMsg) ?></div>
+            </div>
+            <i class="fas fa-chevron-right" style="color:#ccc;"></i>
+        </div>
+
+        <!-- Products -->
+        <?php if(is_array($items) && !empty($items)): ?>
+            <?php foreach($items as $item): 
+                // Pastikan data item ada
+                $itemName = $item['name'] ?? ($item['product_name'] ?? 'Produk');
+                $itemVariant = $item['variant'] ?? '';
+                $itemPrice = $item['price'] ?? 0;
+                $itemQty = $item['qty'] ?? ($item['quantity'] ?? 1);
+                $itemImage = $item['image'] ?? ($item['product_image'] ?? '');
+                
+                // Perbaiki path gambar
+                $imagePath = '';
+                if(!empty($itemImage)){
+                    // Cek apakah path sudah benar
+                    if(file_exists($itemImage)){
+                        $imagePath = $itemImage;
+                    } elseif(file_exists('texcer2/' . $itemImage)){
+                        $imagePath = 'texcer2/' . $itemImage;
+                    } else {
+                        // Gunakan placeholder jika file tidak ada
+                        $imagePath = '';
+                    }
+                }
+            ?>
+            <div class="product-row">
+                <?php if(!empty($imagePath)): ?>
+                <img src="<?= $imagePath ?>" alt="<?= htmlspecialchars($itemName) ?>" class="product-thumb">
+                <?php else: ?>
+                <div class="product-thumb-placeholder">
+                    <i class="fas fa-utensils"></i>
+                </div>
+                <?php endif; ?>
+                
+                <div class="product-detail">
+                    <div class="product-name"><?= htmlspecialchars($itemName) ?></div>
+                    <?php if(!empty($itemVariant)): ?>
+                    <div class="product-variant"><?= htmlspecialchars($itemVariant) ?></div>
+                    <?php endif; ?>
+                    <div class="product-price-row">
+                        <span>Rp<?= number_format($itemPrice, 0, ',', '.') ?></span>
+                        <span>x<?= $itemQty ?></span>
+                    </div>
+                </div>
+            </div>
+            <?php endforeach; ?>
+        <?php else: ?>
+        <div style="padding:20px; text-align:center; color:var(--text-gray);">
+            <i class="fas fa-box-open" style="font-size:2rem; margin-bottom:10px; opacity:0.5;"></i>
+            <p>Detail produk tidak tersedia</p>
+        </div>
+        <?php endif; ?>
+
+        <!-- Footer -->
+        <div class="order-footer">
+            <div class="order-total">
+                Total: Rp<?= number_format($order['total_price'] ?? 0, 0, ',', '.') ?>
+            </div>
+            <div class="action-buttons">
+    
+    <!-- Tombol Review (hanya untuk pesanan Selesai) -->
+    <?php if($isSelesai): ?>
+        <?php foreach($items as $item): 
+            $itemId = $item['id'] ?? $item['product_id'] ?? 0;
+            // Cek apakah sudah direview (fungsi harus ada di config.php)
+            $alreadyReviewed = false;
+            if(function_exists('isProductReviewed')){
+                $alreadyReviewed = isProductReviewed($conn, $order['id'], $itemId);
+            }
+        ?>
+            <?php if(!$alreadyReviewed): ?>
+            <a href="write_review.php?order_id=<?= $order['id'] ?>&product_id=<?= $itemId ?>" 
+               class="btn btn-sm" 
+               style="background: #FFB800; color: white; border: none; border-radius: 20px; padding: 6px 12px; font-weight: 600; text-decoration: none; font-size: 0.8rem;">
+                <i class="fas fa-pen me-1"></i>Ulas
+            </a>
+            <?php else: ?>
+            <span class="badge" style="background: #4CAF50; color: white; border-radius: 20px; padding: 6px 12px; font-size: 0.8rem;">
+                <i class="fas fa-check me-1"></i>✓
+            </span>
+            <?php endif; ?>
+        <?php endforeach; ?>
+    <?php endif; ?>
+    
+    <button class="btn-cart-small" onclick="alert('Tambah ke keranjang')">
+        <i class="fas fa-cart-plus"></i>
+    </button>
+    <button class="btn-buy-again" onclick="alert('Beli lagi')">
+        <?= $isMenunggu ? 'Bayar Sekarang' : 'Beli lagi' ?>
+    </button>
+</div>
+        </div>
+
+    </div>
+    <?php endforeach; ?>
     <?php endif; ?>
 
-</main>
+</div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-<script>
-    // Toggle Review Form
-    function toggleReview(orderId) {
-        const form = document.getElementById('review-' + orderId);
-        form.classList.toggle('active');
-        if(form.classList.contains('active')) {
-            form.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-    }
-    
-    // Set Rating
-    function setRating(orderId, rating) {
-        document.getElementById('rating-' + orderId).value = rating;
-        const stars = document.querySelectorAll('#stars-' + orderId + ' .star');
-        stars.forEach((star, index) => {
-            if(index < rating) {
-                star.classList.add('active');
-            } else {
-                star.classList.remove('active');
-            }
-        });
-    }
-    
-    // Active nav link based on current page
-    document.addEventListener('DOMContentLoaded', function() {
-        var currentPage = window.location.pathname.split('/').pop();
-        document.querySelectorAll('.nav-link').forEach(link => {
-            link.classList.remove('active');
-            if(link.getAttribute('href') === currentPage) {
-                link.classList.add('active');
-            }
-        });
-    });
-</script>
-
 </body>
 </html>
